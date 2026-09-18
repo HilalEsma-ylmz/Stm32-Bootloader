@@ -136,9 +136,10 @@ class TransferWorker(QThread):
     progress_signal = pyqtSignal(int, int)
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, transfer: BootloaderTransfer, fw_bytes: bytes):
+    def __init__(self, transfer: BootloaderTransfer, fw_bytes: bytes, data_baud=proto.FAST_BAUD):
         super().__init__()
         self.transfer = transfer
+        self.data_baud = data_baud
         self.fw_bytes = fw_bytes
         self._stop_requested = False
         self.transfer.log = self.log_signal.emit  # log hedefini bu worker'a bağla
@@ -153,10 +154,11 @@ class TransferWorker(QThread):
                 progress_fn=lambda cur, total: self.progress_signal.emit(cur, total),
                 should_stop=lambda: self._stop_requested,
                 do_handshake=False,  # handshake zaten 'Bağlan' butonuyla yapıldı
+                data_baud=self.data_baud,
             )
             self.finished_signal.emit(
                 True,
-                "Güncelleme başarılı! Kart application ile otomatik yeniden başlatıldı."
+                "NEW firmware doğrulandı ve geçerli kaydedildi. Kart yeniden başlayacak; uygulamanın çalışması ayrıca doğrulanmadı."
             )
         except TransferError as e:
             self.finished_signal.emit(False, str(e))
@@ -180,7 +182,7 @@ class ResetWorker(QThread):
             transfer.connect()
             transfer.request_soft_reset()
             transfer.close()
-            self.finished_signal.emit(True, "Kart yazılımsal olarak yeniden başlatıldı.")
+            self.finished_signal.emit(True, "Reset komutu gönderildi; karttan reset doğrulaması alınmıyor.")
         except Exception as exc:
             transfer.close()
             self.finished_signal.emit(False, f"Yazılımsal reset hatası: {exc}")
@@ -194,6 +196,7 @@ class MainWindow(QWidget):
         self.hs_worker = None
         self.tx_worker = None
         self.reset_worker = None
+        self.busy = False
         self._build_ui()
 
     # ================= ARAYÜZ =================
@@ -209,7 +212,7 @@ class MainWindow(QWidget):
         # --- Başlık ---
         title = QLabel("STM32 UART Bootloader")
         title.setObjectName("titleLabel")
-        subtitle = QLabel("Firmware Sender  ·  STM32F0308-DISCO  ·  Protocol v1")
+        subtitle = QLabel("Firmware Sender  ·  STM32F0308-DISCO  ·  NEW/OLD · Hızlı / Test")
         subtitle.setObjectName("subtitleLabel")
         root.addWidget(title)
         root.addWidget(subtitle)
@@ -240,6 +243,8 @@ class MainWindow(QWidget):
 
         self.setLayout(root)
         self.refresh_ports()
+        self.port_combo.currentIndexChanged.connect(self.connection_changed)
+        self.baud_combo.currentIndexChanged.connect(self.connection_changed)
 
     def _build_connection_card(self) -> QFrame:
         frame, layout = card_frame("1. Kart Bağlantısı")
@@ -254,8 +259,14 @@ class MainWindow(QWidget):
 
         grid.addWidget(QLabel("Baud"), 1, 0)
         self.baud_combo = QComboBox()
-        self.baud_combo.addItems(["115200", "9600", "57600", "230400"])
+        self.baud_combo.addItems(["115200"])
         grid.addWidget(self.baud_combo, 1, 1)
+        grid.addWidget(QLabel("Aktarım modu"), 2, 0)
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItem("Normal — 1.000.000 baud", proto.FAST_BAUD)
+        self.speed_combo.addItem("Test — 115200 baud (mevcut hız)", proto.BASE_BAUD)
+        self.speed_combo.setToolTip("Bağlantı 115200 baud ile kurulur. Normal mod aktarım öncesinde hız değiştirir.")
+        grid.addWidget(self.speed_combo, 2, 1, 1, 2)
         layout.addLayout(grid)
 
         hint = QLabel("USB-UART: 3.3 V TTL / PA9-PA10")
@@ -326,6 +337,13 @@ class MainWindow(QWidget):
         return frame
 
     # ================= Olaylar =================
+    def connection_changed(self, *_args):
+        if self.transfer is not None:
+            self.transfer.close()
+            self.transfer = None
+            self.connect_status_label.setText("Ayar değişti — tekrar Bağlan")
+        self._update_start_button_state()
+
     def refresh_ports(self):
         self.port_combo.clear()
         ports = [p.device for p in serial.tools.list_ports.comports()]
@@ -348,6 +366,11 @@ class MainWindow(QWidget):
             )
             return
 
+        try:
+            proto.validate_firmware(fw_bytes)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Geçersiz firmware", str(exc))
+            return
         self.fw_bytes = fw_bytes
         chunk_count = len(proto.split_into_chunks(fw_bytes))
         fw_crc32 = proto.crc32_standard(fw_bytes)
@@ -362,6 +385,8 @@ class MainWindow(QWidget):
 
     # --- Adım 1: Bağlan / Handshake ---
     def start_handshake(self):
+        if self.busy:
+            return
         # Bir önceki aktarımın seri portu açık kalmış olmasın. Windows aynı
         # COM portunu ikinci kez açmaya izin vermez (PermissionError 13).
         if self.transfer is not None:
@@ -377,13 +402,22 @@ class MainWindow(QWidget):
         self.connect_btn.setEnabled(False)
         self.reset_btn.setEnabled(False)
         self.connect_status_label.setText("Bağlanıyor... (handshake gönderiliyor)")
+        self.busy = True
 
         self.hs_worker = HandshakeWorker(port, baud)
         self.hs_worker.log_signal.connect(self.log)
         self.hs_worker.finished_signal.connect(self.on_handshake_finished)
+        self.start_btn.setEnabled(False)
+        self.port_combo.setEnabled(False)
+        self.baud_combo.setEnabled(False)
+        self.scan_btn.setEnabled(False)
         self.hs_worker.start()
 
     def on_handshake_finished(self, success: bool, message: str, transfer):
+        self.busy = False
+        self.port_combo.setEnabled(True)
+        self.baud_combo.setEnabled(True)
+        self.scan_btn.setEnabled(True)
         self.connect_btn.setEnabled(True)
         self.reset_btn.setEnabled(True)
         self.log(message)
@@ -398,7 +432,7 @@ class MainWindow(QWidget):
 
     def request_soft_reset(self):
         """Kartın fiziksel RESET düğmesine dokunmadan yeniden başlatılması."""
-        if ((self.tx_worker is not None and self.tx_worker.isRunning()) or
+        if (self.busy or (self.tx_worker is not None and self.tx_worker.isRunning()) or
                 (self.hs_worker is not None and self.hs_worker.isRunning())):
             QMessageBox.warning(self, "Aktarım sürüyor", "Aktarım sırasında reset gönderilemez.")
             return
@@ -414,6 +448,8 @@ class MainWindow(QWidget):
 
         self.reset_btn.setEnabled(False)
         self.connect_btn.setEnabled(False)
+        self.busy = True
+        self._update_start_button_state()
         self.connect_status_label.setText("Kart yeniden başlatılıyor...")
         self.reset_worker = ResetWorker(port, int(self.baud_combo.currentText()))
         self.reset_worker.log_signal.connect(self.log)
@@ -421,6 +457,8 @@ class MainWindow(QWidget):
         self.reset_worker.start()
 
     def on_soft_reset_finished(self, success: bool, message: str):
+        self.busy = False
+        self._update_start_button_state()
         self.log(message)
         self.reset_btn.setEnabled(True)
         self.connect_btn.setEnabled(True)
@@ -429,17 +467,18 @@ class MainWindow(QWidget):
             QMessageBox.critical(self, "Reset Hatası", message)
             return
 
-        self.connect_status_label.setText("Yeniden başlatıldı — bağlı değil")
-        self.status_label.setText("Kart yeniden başlatıldı.")
+        self.connect_status_label.setText("Reset gönderildi — bağlı değil")
+        self.status_label.setText("Reset komutu gönderildi; yeniden bağlanabilirsiniz.")
 
     # --- Adım 2: Aktarımı Başlat / Durdur ---
     def _update_start_button_state(self):
-        self.start_btn.setEnabled(self.transfer is not None and self.fw_bytes is not None)
+        self.start_btn.setEnabled(self.transfer is not None and self.fw_bytes is not None and not self.busy)
 
     def start_transfer(self):
-        if self.transfer is None or self.fw_bytes is None:
+        if self.busy or self.transfer is None or self.fw_bytes is None:
             return
 
+        self.busy = True
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.select_file_btn.setEnabled(False)
@@ -447,10 +486,15 @@ class MainWindow(QWidget):
         self.progress_bar.setValue(0)
         self.status_label.setText("Aktarım sürüyor...")
 
-        self.tx_worker = TransferWorker(self.transfer, self.fw_bytes)
+        self.tx_worker = TransferWorker(self.transfer, self.fw_bytes, self.speed_combo.currentData())
         self.tx_worker.log_signal.connect(self.log)
         self.tx_worker.progress_signal.connect(self.update_progress)
         self.tx_worker.finished_signal.connect(self.on_transfer_finished)
+        self.reset_btn.setEnabled(False)
+        self.port_combo.setEnabled(False)
+        self.baud_combo.setEnabled(False)
+        self.scan_btn.setEnabled(False)
+        self.speed_combo.setEnabled(False)
         self.tx_worker.start()
 
     def stop_transfer(self):
@@ -463,6 +507,12 @@ class MainWindow(QWidget):
         self.progress_bar.setValue(current)
 
     def on_transfer_finished(self, success: bool, message: str):
+        self.speed_combo.setEnabled(True)
+        self.busy = False
+        self.reset_btn.setEnabled(True)
+        self.port_combo.setEnabled(True)
+        self.baud_combo.setEnabled(True)
+        self.scan_btn.setEnabled(True)
         self.log(message)
         self.status_label.setText(message)
         if success:

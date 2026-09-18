@@ -27,7 +27,7 @@ UART_HandleTypeDef huart1;
 
 /* 0: PC8-PC9 sürekli yanar, 1: 500 ms aralıkla yanıp söner. */
 #ifndef APPLICATION_BLINK_MODE
-#define APPLICATION_BLINK_MODE 1U
+#define APPLICATION_BLINK_MODE 0U
 #endif
 
 static void MX_USART1_UART_Init(void);
@@ -44,7 +44,8 @@ static void MX_USART1_UART_Init(void);
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* This application always executes from NEW (0x08003400, 24 KB).
+ * OLD is restored by the bootloader; no second application build is needed. */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -124,13 +125,14 @@ int main(void)
     uint8_t command;
     if (HAL_UART_Receive(&huart1, &command, 1U, 10U) == HAL_OK)
     {
-      if (command == HELLO)
-      {
-        /* GUI update isterse bootloader'a kalici olarak gec. */
-        *(volatile uint32_t *)UPDATE_REQUEST_ADDRESS = UPDATE_REQUEST_MAGIC;
-        NVIC_SystemReset();
-      }
-      else if (command == SOFT_RESET)
+      // if (command == HELLO)
+      // {
+      //   /* GUI update isterse bootloader'a kalici olarak gec. */
+      //   *(volatile uint32_t *)UPDATE_REQUEST_ADDRESS = UPDATE_REQUEST_MAGIC;
+      //   __DSB(); /* Complete the SRAM request write before reset. */
+      //   NVIC_SystemReset();
+      // }
+      if (command == SOFT_RESET)
       {
         /* Arayuzdeki reset dugmesi: fiziksel NRST ile ayni akisi baslatir. */
         NVIC_SystemReset();

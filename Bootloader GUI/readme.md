@@ -1,31 +1,20 @@
-# UART Bootloader — GUI (PC Tarafı)
+# UART Firmware Sender — Normal / Test
 
-ICD-BOOT-UART-003 dokümanına göre yazılmış firmware gönderme aracı.
+24 KB NEW / 24 KB OLD duzenindeki bootloader ile kullanilir.
 
-## Kurulum
+Kurulum: pip install -r requirements.txt
 
-```bash
-pip install pyqt5 pyserial
-```
+Calistirma: python main.py
 
-## Çalıştırma
+Baglan -> .bin Sec -> Aktarimi Baslat. START sirasinda yedekleme yapilir.
+Normal mod: 1.000.000 baud (bootloader v3 gerekir).
+Test modu: 115200 baud, onceki hiz, ek gecikme yok (v2/v3).
+Handshake daima 115200 ile baslar; hiz degisimi START'tan once dogrulanir.
+Durdur, karttan OLD kurtarma onayi bekler. Reset komutunun ayri onayi yoktur.
 
-```bash
-python main.py
-```
+INFO destegi olmayan eski bootloader reddedilir; v2 sadece Test modunu destekler.
+Bos, yanlis adrese derlenmis veya 24 KB uzeri firmware reddedilir.
 
-## Dosyalar
+[Bellek duzeni ve kurulum](../README.md)
 
-| Dosya | Görev |
-|---|---|
-| `protocol.py` | ICD'deki komutlar, paket formatları, CRC16/CRC32 hesaplamaları. ICD değişirse sadece burası güncellenir. |
-| `serial_handler.py` | UART üzerinden handshake, boyut bildirimi, chunk gönderme (retry ile), bitiş sinyali — arayüzden bağımsız iş mantığı. |
-| `main.py` | PyQt5 penceresi: dosya seçme, port seçme, ilerleme çubuğu, log. Aktarımı arka planda `QThread` ile yürütür ki pencere donmasın. |
-
-## Notlar / Henüz netleşmemiş noktalar (ICD Bölüm 12 — Açık Konular)
-
-- Baud rate şu an 115200 olarak varsayıldı, kesinleşince `protocol.py`'ye taşınıp
-  `serial_handler.py` içinde sabit olarak kullanılmalı.
-- CRC16/CRC32 polinomları ICD'deki önerilen (tentatif) değerlerle uygulandı;
-  kart tarafındaki (embedded C) implementasyonla birebir eşleştiğinden emin olunmalı
-  — ikisi farklı polinom kullanırsa CRC kontrolleri hep NACK döner.
+[Protokol ve kurtarma akisi](../docs/UPDATE_FLOW.md)
